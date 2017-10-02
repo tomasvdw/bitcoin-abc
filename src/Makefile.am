@@ -312,6 +312,11 @@ libbitcoin_consensus_a_SOURCES = \
   uint256.h \
   utilstrencodings.cpp \
   utilstrencodings.h \
+  utxocommit/node.cpp \
+  utxocommit/node.h \
+  utxocommit/multiset.h \
+  utxocommit/utxocommit.cpp \
+  utxocommit/utxocommit.h \
   version.h
 
 # common: shared between bitcoind, and bitcoin-qt and non-server tools
