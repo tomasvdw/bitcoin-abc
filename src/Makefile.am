@@ -169,6 +169,7 @@ BITCOIN_CORE_H = \
   util.h \
   utilmoneystr.h \
   utiltime.h \
+  utxocommit.cpp \
   validation.h \
   validationinterface.h \
   versionbits.h \

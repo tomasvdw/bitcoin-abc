@@ -56,10 +56,16 @@ public:
     template <typename Stream> void Serialize(Stream &s) const {
         assert(!IsSpent());
         ::Serialize(s, VARINT(nHeightAndIsCoinBase));
-        ::Serialize(s, CTxOutCompressor(REF(out)));
+        // only compress for disk format
+        if (s.GetType() & SER_DISK) {
+            ::Serialize(s, CTxOutCompressor(REF(out)));
+        } else {
+            ::Serialize(s, REF(out));
+        }
     }
 
     template <typename Stream> void Unserialize(Stream &s) {
+        assert(s.GetType() & SER_DISK);
         ::Unserialize(s, VARINT(nHeightAndIsCoinBase));
         ::Unserialize(s, REF(CTxOutCompressor(out)));
     }

@@ -71,6 +71,7 @@ add_executable(test_bitcoin
 	undo_tests.cpp
 	univalue_tests.cpp
 	util_tests.cpp
+    utxocommit_tests.cpp
 	validation_tests.cpp
 )
 

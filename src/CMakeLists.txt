@@ -133,6 +133,7 @@ add_library(common
 	scheduler.cpp
 	script/sign.cpp
 	script/standard.cpp
+    utxocommit.cpp
 	warnings.cpp
 )
 
