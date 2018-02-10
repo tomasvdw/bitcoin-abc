@@ -7,7 +7,9 @@
 
 #include "coins.h"
 #include "test/test_bitcoin.h"
+#include "testutil.h"
 #include "util.h"
+
 #include <vector>
 
 #include <boost/test/unit_test.hpp>
@@ -27,7 +29,7 @@ static Coin RandomCoin() {
     return c;
 }
 
-BOOST_FIXTURE_TEST_SUITE(utxocommit_tests, BasicTestingSetup)
+BOOST_FIXTURE_TEST_SUITE(utxocommit_tests, TestingSetup)
 
 BOOST_AUTO_TEST_CASE(utxo_commit_order) {
 
@@ -121,6 +123,51 @@ BOOST_AUTO_TEST_CASE(utxo_commit_serialize) {
 
     secp256k1_context_destroy(ctx);
     BOOST_ASSERT(uint256(expectedhash) == hash);
+}
+
+BOOST_AUTO_TEST_CASE(utxo_commit_addcursor) {
+
+    // Test adding a CCoinView Cursor to a CUtxoCommit
+    // This simulates the initial upgrade where the commitment stored in
+    // LevelDB must be generated from the existing UTXO set.
+
+    const int count = 50000;
+
+    // We use the pcoinviewdb provided by the test fixture's TestingSetup
+    CCoinsViewCache cache(pcoinsdbview);
+    cache.SetBestBlock(InsecureRand256());
+
+    // We will compare the commitment generated step-by-step, and the one
+    // created
+    // from cursor
+    CUtxoCommit commit_step, commit_cursor;
+
+    LogPrintf("Preparing database\n");
+
+    for (int n = 0; n < count; n++) {
+        const COutPoint op = RandomOutpoint();
+        const Coin c = RandomCoin();
+
+        if (c.GetTxOut().scriptPubKey.IsUnspendable()) {
+            continue;
+        }
+
+        commit_step.Add(op, c);
+        cache.AddCoin(op, c, false);
+        if ((n + 1) % 5000000 == 0) {
+            LogPrintf("Flushing\n");
+            BOOST_ASSERT(cache.Flush());
+        }
+    }
+
+    BOOST_ASSERT(cache.Flush());
+    LogPrintf("Starting ECMH generation from cursor\n");
+
+    std::unique_ptr<CCoinsViewCursor> pcursor(pcoinsdbview->Cursor());
+    commit_cursor.AddCoinView(pcursor.get());
+
+    BOOST_CHECK(commit_step == commit_cursor);
+    LogPrintf("ECMH generation from cursor done\n");
 }
 
 BOOST_AUTO_TEST_SUITE_END()

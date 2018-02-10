@@ -12,6 +12,7 @@
 #include <vector>
 
 class Coin;
+class CCoinsViewCursor;
 
 /* A Utxo Commitment
  *
@@ -36,11 +37,11 @@ public:
     // Constructs empty CUtxoCommit
     CUtxoCommit();
 
-    // Construct by combining two other CUtxoCommits
-    CUtxoCommit(const CUtxoCommit &commit1, const CUtxoCommit &commit2);
-
     // Adds a TXO from multiset
     void Add(const COutPoint &out, const Coin &element);
+
+    // Adds another commitment to this one
+    void Add(const CUtxoCommit &other);
 
     // Removes a TXO from multiset
     void Remove(const COutPoint &out, const Coin &element);
@@ -48,6 +49,9 @@ public:
     void Clear();
 
     uint256 GetHash() const;
+
+    // Initializes from an existing UTXO set
+    bool AddCoinView(CCoinsViewCursor *cursor);
 
     // Comparison
     friend bool operator==(const CUtxoCommit &a, const CUtxoCommit &b) {

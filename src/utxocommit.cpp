@@ -4,6 +4,8 @@
 
 #include "utxocommit.h"
 
+#include "util.h"
+
 namespace {
 secp256k1_context *secp256k1_context_multiset;
 int secp256k1_context_refcount = 0;
@@ -16,6 +18,7 @@ CUtxoCommit::CUtxoCommit() {
             secp256k1_context_create(SECP256K1_CONTEXT_NONE);
     }
     secp256k1_context_refcount++;
+
     secp256k1_multiset_init(secp256k1_context_multiset, &multiset);
 }
 
@@ -26,15 +29,6 @@ CUtxoCommit::~CUtxoCommit() {
     }
 }
 
-// Construct by combining two other CUtxoCommits
-CUtxoCommit::CUtxoCommit(const CUtxoCommit &commit1, const CUtxoCommit &commit2)
-    : CUtxoCommit() {
-    secp256k1_multiset_combine(secp256k1_context_multiset, &this->multiset,
-                               &commit1.multiset);
-    secp256k1_multiset_combine(secp256k1_context_multiset, &this->multiset,
-                               &commit2.multiset);
-}
-
 // Adds a TXO from multiset
 void CUtxoCommit::Add(const COutPoint &out, const Coin &element) {
 
@@ -42,6 +36,12 @@ void CUtxoCommit::Add(const COutPoint &out, const Coin &element) {
     txo << out << element;
     secp256k1_multiset_add(secp256k1_context_multiset, &multiset,
                            (const uint8_t *)&txo[0], txo.size());
+}
+
+// Adds another commitment to this one
+void CUtxoCommit::Add(const CUtxoCommit &other) {
+    secp256k1_multiset_combine(secp256k1_context_multiset, &this->multiset,
+                               &other.multiset);
 }
 
 // Removes a TXO from multiset
@@ -63,4 +63,33 @@ uint256 CUtxoCommit::GetHash() const {
     secp256k1_multiset_finalize(secp256k1_context_multiset, hash.data(),
                                 &multiset);
     return uint256(hash);
+}
+
+bool CUtxoCommit::AddCoinView(CCoinsViewCursor *pcursor) {
+
+    LogPrintf("Adding existing UTXO set to the UTXO commitment");
+
+    // TODO: Parallelize
+    int n = 0;
+    while (pcursor->Valid()) {
+
+        COutPoint key;
+        Coin coin;
+        if (pcursor->GetKey(key) && pcursor->GetValue(coin)) {
+
+            Add(key, coin);
+        } else {
+            return error("Failed to retrieve UTXO from cursor");
+        }
+
+        if ((n % 1000000) == 0) {
+            uint8_t c = *key.hash.begin();
+            LogPrintf("Generating UTXO commitment; progress %d\n",
+                      uint32_t(c) * 100 / 256);
+        }
+        n++;
+
+        pcursor->Next();
+    }
+    return true;
 }
