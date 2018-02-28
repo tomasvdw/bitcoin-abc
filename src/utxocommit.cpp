@@ -3,7 +3,7 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include "utxocommit.h"
-
+#include "coins.h"
 #include "util.h"
 
 namespace {
@@ -67,7 +67,7 @@ uint256 CUtxoCommit::GetHash() const {
 
 bool CUtxoCommit::AddCoinView(CCoinsViewCursor *pcursor) {
 
-    LogPrintf("Adding existing UTXO set to the UTXO commitment");
+    LogPrintf("Adding existing UTXO set to the UTXO commitment\n");
 
     // TODO: Parallelize
     int n = 0;

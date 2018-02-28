@@ -5,12 +5,12 @@
 #ifndef BITCOIN_UTXOCOMMIT_H
 #define BITCOIN_UTXOCOMMIT_H
 
-#include "coins.h"
 #include "hash.h"
 #include "secp256k1/include/secp256k1_multiset.h"
 #include "streams.h"
 #include <vector>
 
+class COutPoint;
 class Coin;
 class CCoinsViewCursor;
 

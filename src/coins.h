@@ -12,10 +12,13 @@
 #include "memusage.h"
 #include "serialize.h"
 #include "uint256.h"
+#include "utxocommit.h"
 
 #include <cassert>
 #include <cstdint>
 #include <unordered_map>
+
+class CUtxoCommit;
 
 /**
  * A UTXO entry.
@@ -163,7 +166,8 @@ public:
 
     //! Do a bulk modification (multiple Coin changes + BestBlock change).
     //! The passed mapCoins can be modified.
-    virtual bool BatchWrite(CCoinsMap &mapCoins, const uint256 &hashBlock);
+    virtual bool BatchWrite(CCoinsMap &mapCoins, const uint256 &hashBlock,
+                            CUtxoCommit *commitDelta);
 
     //! Get a cursor to iterate over the whole state
     virtual CCoinsViewCursor *Cursor() const;
@@ -173,6 +177,9 @@ public:
 
     //! Estimate database size (0 if not implemented)
     virtual size_t EstimateSize() const { return 0; }
+
+    //! Returns the UTXO-commitment or nullptr if it is not yet up-to-date
+    virtual CUtxoCommit *GetCommitment() const;
 };
 
 /** CCoinsView backed by another CCoinsView */
@@ -187,9 +194,11 @@ public:
     uint256 GetBestBlock() const override;
     std::vector<uint256> GetHeadBlocks() const override;
     void SetBackend(CCoinsView &viewIn);
-    bool BatchWrite(CCoinsMap &mapCoins, const uint256 &hashBlock) override;
+    bool BatchWrite(CCoinsMap &mapCoins, const uint256 &hashBlock,
+                    CUtxoCommit *commitDelta) override;
     CCoinsViewCursor *Cursor() const override;
     size_t EstimateSize() const override;
+    CUtxoCommit *GetCommitment() const override;
 };
 
 /**
@@ -207,15 +216,20 @@ protected:
     /* Cached dynamic memory usage for the inner Coin objects. */
     mutable size_t cachedCoinsUsage;
 
+    CUtxoCommit *cacheUtxoCommitDelta;
+
 public:
     CCoinsViewCache(CCoinsView *baseIn);
+
+    virtual ~CCoinsViewCache();
 
     // Standard CCoinsView methods
     bool GetCoin(const COutPoint &outpoint, Coin &coin) const override;
     bool HaveCoin(const COutPoint &outpoint) const override;
     uint256 GetBestBlock() const override;
     void SetBestBlock(const uint256 &hashBlock);
-    bool BatchWrite(CCoinsMap &mapCoins, const uint256 &hashBlock) override;
+    bool BatchWrite(CCoinsMap &mapCoins, const uint256 &hashBlock,
+                    CUtxoCommit *commitDelta) override;
 
     /**
      * Check if we have the given utxo already loaded in this cache.
@@ -252,6 +266,18 @@ public:
      * backing view) will be undefined.
      */
     bool Flush();
+
+    /**
+     * Returns the UTXO commitment from the current full set
+     * This is the combination of the backed commitment and the commitment delta
+     */
+    CUtxoCommit *GetCommitment() const;
+
+    //! Start maintaining the commitment for this View
+    void CalculateCommitment();
+
+    //! Returns whether this cache is maintaining a commitment delta
+    bool HasCommitmentDelta() const;
 
     /**
      * Removes the UTXO with the given outpoint from the cache, if it is not

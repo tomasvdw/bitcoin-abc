@@ -1885,6 +1885,56 @@ static uint32_t GetBlockScriptFlags(const CBlockIndex *pindex,
     return flags;
 }
 
+/**
+ * Verifies whether the given block is assumed valid.
+ * This will cause the script not to be checked and the
+ * commitment not to be checked
+ */
+static bool IsAssumedValid(const Config &config, CBlockIndex *pindex) {
+
+    AssertLockHeld(cs_main);
+
+    if (!hashAssumeValid.IsNull()) {
+
+        const Consensus::Params &consensusParams =
+            config.GetChainParams().GetConsensus();
+
+        // We've been configured with the hash of a block which has been
+        // externally verified to have a valid history. A suitable default value
+        // is included with the software and updated from time to time. Because
+        // validity relative to a piece of software is an objective fact these
+        // defaults can be easily reviewed. This setting doesn't force the
+        // selection of any particular chain but makes validating some faster by
+        // effectively caching the result of part of the verification.
+        BlockMap::const_iterator it = mapBlockIndex.find(hashAssumeValid);
+        if (it != mapBlockIndex.end()) {
+            if (it->second->GetAncestor(pindex->nHeight) == pindex &&
+                pindexBestHeader->GetAncestor(pindex->nHeight) == pindex &&
+                pindexBestHeader->nChainWork >=
+                    UintToArith256(consensusParams.nMinimumChainWork)) {
+                // This block is a member of the assumed verified chain and an
+                // ancestor of the best header. The equivalent time check
+                // discourages hashpower from extorting the network via DOS
+                // attack into accepting an invalid block through telling users
+                // they must manually set assumevalid. Requiring a software
+                // change or burying the invalid block, regardless of the
+                // setting, makes it hard to hide the implication of the demand.
+                // This also avoids having release candidates that are hardly
+                // doing any signature verification at all in testing without
+                // having to artificially set the default assumed verified block
+                // further back. The test against nMinimumChainWork prevents the
+                // skipping when denied access to any chain at least as good as
+                // the expected chain.
+                return !(GetBlockProofEquivalentTime(
+                             *pindexBestHeader, *pindex, *pindexBestHeader,
+                             consensusParams) <= 60 * 60 * 24 * 7 * 2);
+            }
+        }
+    }
+
+    return false;
+}
+
 static int64_t nTimeCheck = 0;
 static int64_t nTimeForks = 0;
 static int64_t nTimeVerify = 0;
@@ -1929,41 +1979,7 @@ static bool ConnectBlock(const Config &config, const CBlock &block,
         return true;
     }
 
-    bool fScriptChecks = true;
-    if (!hashAssumeValid.IsNull()) {
-        // We've been configured with the hash of a block which has been
-        // externally verified to have a valid history. A suitable default value
-        // is included with the software and updated from time to time. Because
-        // validity relative to a piece of software is an objective fact these
-        // defaults can be easily reviewed. This setting doesn't force the
-        // selection of any particular chain but makes validating some faster by
-        // effectively caching the result of part of the verification.
-        BlockMap::const_iterator it = mapBlockIndex.find(hashAssumeValid);
-        if (it != mapBlockIndex.end()) {
-            if (it->second->GetAncestor(pindex->nHeight) == pindex &&
-                pindexBestHeader->GetAncestor(pindex->nHeight) == pindex &&
-                pindexBestHeader->nChainWork >=
-                    UintToArith256(consensusParams.nMinimumChainWork)) {
-                // This block is a member of the assumed verified chain and an
-                // ancestor of the best header. The equivalent time check
-                // discourages hashpower from extorting the network via DOS
-                // attack into accepting an invalid block through telling users
-                // they must manually set assumevalid. Requiring a software
-                // change or burying the invalid block, regardless of the
-                // setting, makes it hard to hide the implication of the demand.
-                // This also avoids having release candidates that are hardly
-                // doing any signature verification at all in testing without
-                // having to artificially set the default assumed verified block
-                // further back. The test against nMinimumChainWork prevents the
-                // skipping when denied access to any chain at least as good as
-                // the expected chain.
-                fScriptChecks =
-                    (GetBlockProofEquivalentTime(
-                         *pindexBestHeader, *pindex, *pindexBestHeader,
-                         consensusParams) <= 60 * 60 * 24 * 7 * 2);
-            }
-        }
-    }
+    bool fScriptChecks = !IsAssumedValid(config, pindex);
 
     int64_t nTime1 = GetTimeMicros();
     nTimeCheck += nTime1 - nTimeStart;
@@ -2359,8 +2375,8 @@ static bool FlushStateToDisk(const CChainParams &chainparams,
             nLastSetChain = nNow;
         }
     } catch (const std::runtime_error &e) {
-        return AbortNode(
-            state, std::string("System error while flushing: ") + e.what());
+        return AbortNode(state, std::string("System error while flushing: ") +
+                                    e.what());
     }
     return true;
 }
@@ -2489,6 +2505,7 @@ static bool DisconnectTip(const Config &config, CValidationState &state,
     int64_t nStart = GetTimeMicros();
     {
         CCoinsViewCache view(pcoinsTip);
+        view.CalculateCommitment();
         assert(view.GetBestBlock() == pindexDelete->GetBlockHash());
         if (DisconnectBlock(block, pindexDelete, view) != DISCONNECT_OK) {
             return error("DisconnectTip(): DisconnectBlock %s failed",
@@ -2638,6 +2655,19 @@ static bool ConnectTip(const Config &config, CValidationState &state,
 
     const CBlock &blockConnecting = *pthisBlock;
 
+    // If we should start mainting the UTXO commitment
+    // we must flush first (except at genesis)
+    bool assumeValid = IsAssumedValid(config, pindexNew);
+    bool skippingCommitment = !pcoinsTip->HasCommitmentDelta();
+    if (skippingCommitment && !assumeValid) {
+
+        const Consensus::Params &consensusParams =
+            config.GetChainParams().GetConsensus();
+        if (pthisBlock->GetHash() != consensusParams.hashGenesisBlock) {
+            pcoinsTip->Flush();
+        }
+    }
+
     // Apply the block atomically to the chain state.
     int64_t nTime2 = GetTimeMicros();
     nTimeReadFromDisk += nTime2 - nTime1;
@@ -2646,6 +2676,10 @@ static bool ConnectTip(const Config &config, CValidationState &state,
              (nTime2 - nTime1) * 0.001, nTimeReadFromDisk * 0.000001);
     {
         CCoinsViewCache view(pcoinsTip);
+        if (!assumeValid) {
+            view.CalculateCommitment();
+        }
+
         bool rv = ConnectBlock(config, blockConnecting, state, pindexNew, view);
         GetMainSignals().BlockChecked(blockConnecting, state);
         if (!rv) {
@@ -2661,11 +2695,13 @@ static bool ConnectTip(const Config &config, CValidationState &state,
                  (nTime3 - nTime2) * 0.001, nTimeConnectTotal * 0.000001);
         bool flushed = view.Flush();
         assert(flushed);
+        assert(assumeValid || pcoinsTip->HasCommitmentDelta());
     }
     int64_t nTime4 = GetTimeMicros();
     nTimeFlush += nTime4 - nTime3;
     LogPrint(BCLog::BENCH, "  - Flush: %.2fms [%.2fs]\n",
              (nTime4 - nTime3) * 0.001, nTimeFlush * 0.000001);
+
     // Write the chain state to disk, if necessary.
     if (!FlushStateToDisk(config.GetChainParams(), state,
                           FLUSH_STATE_IF_NEEDED)) {
@@ -4403,11 +4439,10 @@ bool CVerifyDB::VerifyDB(const Config &config, CCoinsView *coinsview,
             boost::this_thread::interruption_point();
             uiInterface.ShowProgress(
                 _("Verifying blocks..."),
-                std::max(1,
-                         std::min(99,
-                                  100 - (int)(((double)(chainActive.Height() -
-                                                        pindex->nHeight)) /
-                                              (double)nCheckDepth * 50))));
+                std::max(
+                    1, std::min(99, 100 - (int)(((double)(chainActive.Height() -
+                                                          pindex->nHeight)) /
+                                                (double)nCheckDepth * 50))));
             pindex = chainActive.Next(pindex);
             CBlock block;
             if (!ReadBlockFromDisk(block, pindex, config)) {

@@ -54,7 +54,8 @@ public:
 
     uint256 GetBestBlock() const override { return hashBestBlock_; }
 
-    bool BatchWrite(CCoinsMap &mapCoins, const uint256 &hashBlock) override {
+    bool BatchWrite(CCoinsMap &mapCoins, const uint256 &hashBlock,
+                    CUtxoCommit *commitDelta) override {
         for (CCoinsMap::iterator it = mapCoins.begin(); it != mapCoins.end();) {
             if (it->second.flags & CCoinsCacheEntry::DIRTY) {
                 // Same optimization used in CCoinsViewDB is to only write dirty
@@ -610,7 +611,9 @@ void GetCoinMapEntry(const CCoinsMap &map, Amount &value, char &flags) {
 void WriteCoinViewEntry(CCoinsView &view, const Amount value, char flags) {
     CCoinsMap map;
     InsertCoinMapEntry(map, value, flags);
-    view.BatchWrite(map, {});
+    CUtxoCommit commit;
+    commit.Add(map.begin()->first, map.begin()->second.coin);
+    view.BatchWrite(map, {}, &commit);
 }
 
 class SingleEntryCacheTest {

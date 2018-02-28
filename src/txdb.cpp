@@ -31,6 +31,8 @@ static const char DB_FLAG = 'F';
 static const char DB_REINDEX_FLAG = 'R';
 static const char DB_LAST_BLOCK = 'l';
 
+static const char DB_COMMITMENT = 'U';
+
 namespace {
 
 struct CoinEntry {
@@ -78,7 +80,18 @@ std::vector<uint256> CCoinsViewDB::GetHeadBlocks() const {
     return vhashHeadBlocks;
 }
 
-bool CCoinsViewDB::BatchWrite(CCoinsMap &mapCoins, const uint256 &hashBlock) {
+CUtxoCommit *CCoinsViewDB::GetCommitment() const {
+    CUtxoCommit *result = new CUtxoCommit();
+    if (!db.Read(DB_COMMITMENT, *result)) {
+        delete result;
+        return nullptr;
+    } else {
+        return result;
+    }
+}
+
+bool CCoinsViewDB::BatchWrite(CCoinsMap &mapCoins, const uint256 &hashBlock,
+                              CUtxoCommit *commitDelta) {
     CDBBatch batch(db);
     size_t count = 0;
     size_t changed = 0;
@@ -103,6 +116,55 @@ bool CCoinsViewDB::BatchWrite(CCoinsMap &mapCoins, const uint256 &hashBlock) {
     // interrupting after partial writes from multiple independent reorgs.
     batch.Erase(DB_BEST_BLOCK);
     batch.Write(DB_HEAD_BLOCKS, std::vector<uint256>{hashBlock, old_tip});
+
+    if (commitDelta != nullptr) {
+        // TODO. Procedure:
+        // If we have a commitment in the DB, merge commitDelta
+        // If we don't have a commitment in the DB,
+        // create one from the current snapshot, then merge commitDelta
+
+        // This provides
+        // A: Fast IBD as commitDelta will be nullptr until assumevalid is
+        // reached
+        // B: An upgrade from a pre-utxo-commitment version will happen smoothly
+
+        // This could be done async. We start creating the commitment from a
+        // snapshot
+        // in a different thread; meanwhile we maintain a commitmentDelta from
+        // this point onwards
+        // and merge and store them when done.
+        // The problem is, that we may have to verify commitments while this
+        // procedure is busy,
+        // as we're beyond the assumevalid block. This is tricky, especially
+        // since it needs to be carried
+        // over shutdown/startup. It may be possible yet non-trivial to enqueue
+        // these pending
+        // validations in the DB somehow.
+        // Alternatively, we could close our eyes for not checking the
+        // commitments just behind assumevalid...
+
+        // It may be easiest to start synchronous, blocking a few minutes:
+        CUtxoCommit *dbCommitment = GetCommitment();
+        if (dbCommitment == nullptr) {
+            LogPrint(BCLog::COINDB, "Start maintaining UTXO commitment\n");
+
+            CUtxoCommit snapshotCommitment;
+            std::unique_ptr<CCoinsViewCursor> cursor(this->Cursor());
+            snapshotCommitment.AddCoinView(
+                cursor.get()); // blocks a few minutes
+            snapshotCommitment.Add(*commitDelta);
+            batch.Write(DB_COMMITMENT, snapshotCommitment);
+        } else {
+            LogPrint(BCLog::COINDB, "Merging UTXO commitment\n");
+            dbCommitment->Add(*commitDelta);
+            batch.Write(DB_COMMITMENT, *dbCommitment);
+        }
+    } else {
+        // Once we have a commitment, we must maintain it
+        LogPrint(BCLog::COINDB,
+                 "Skipping commitment while blocks are assumed valid\n");
+        batch.Erase(DB_COMMITMENT);
+    }
 
     for (CCoinsMap::iterator it = mapCoins.begin(); it != mapCoins.end();) {
         if (it->second.flags & CCoinsCacheEntry::DIRTY) {

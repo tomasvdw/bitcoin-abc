@@ -22,10 +22,15 @@ uint256 CCoinsView::GetBestBlock() const {
 std::vector<uint256> CCoinsView::GetHeadBlocks() const {
     return std::vector<uint256>();
 }
-bool CCoinsView::BatchWrite(CCoinsMap &mapCoins, const uint256 &hashBlock) {
+bool CCoinsView::BatchWrite(CCoinsMap &mapCoins, const uint256 &hashBlock,
+                            CUtxoCommit *commitDelta) {
     return false;
 }
 CCoinsViewCursor *CCoinsView::Cursor() const {
+    return nullptr;
+}
+
+CUtxoCommit *CCoinsView::GetCommitment() const {
     return nullptr;
 }
 
@@ -45,9 +50,9 @@ std::vector<uint256> CCoinsViewBacked::GetHeadBlocks() const {
 void CCoinsViewBacked::SetBackend(CCoinsView &viewIn) {
     base = &viewIn;
 }
-bool CCoinsViewBacked::BatchWrite(CCoinsMap &mapCoins,
-                                  const uint256 &hashBlock) {
-    return base->BatchWrite(mapCoins, hashBlock);
+bool CCoinsViewBacked::BatchWrite(CCoinsMap &mapCoins, const uint256 &hashBlock,
+                                  CUtxoCommit *commitDelta) {
+    return base->BatchWrite(mapCoins, hashBlock, commitDelta);
 }
 CCoinsViewCursor *CCoinsViewBacked::Cursor() const {
     return base->Cursor();
@@ -56,12 +61,40 @@ size_t CCoinsViewBacked::EstimateSize() const {
     return base->EstimateSize();
 }
 
+CUtxoCommit *CCoinsViewBacked::GetCommitment() const {
+    return base->GetCommitment();
+}
+
 SaltedOutpointHasher::SaltedOutpointHasher()
     : k0(GetRand(std::numeric_limits<uint64_t>::max())),
       k1(GetRand(std::numeric_limits<uint64_t>::max())) {}
 
 CCoinsViewCache::CCoinsViewCache(CCoinsView *baseIn)
-    : CCoinsViewBacked(baseIn), cachedCoinsUsage(0) {}
+    : CCoinsViewBacked(baseIn), cachedCoinsUsage(0),
+      cacheUtxoCommitDelta(nullptr) {}
+
+CCoinsViewCache::~CCoinsViewCache() {
+    if (cacheUtxoCommitDelta != nullptr) {
+        delete cacheUtxoCommitDelta;
+    }
+}
+
+void CCoinsViewCache::CalculateCommitment() {
+    // Currently this is called *before* the cache is filled,
+    // and the commitment is maintained on AddCoin/SpentCoin
+
+    // It is probably faster to do it *after* the cache is filled,
+    // as this can be parellelized; this does require us to change the
+    // in-memory representation if Coin to include the scriptpubkeys for spent
+    // outputs
+
+    // we can't start maintaing the commitment in the middle of
+    // a cache batch
+    assert(cacheCoins.empty());
+
+    assert(cacheUtxoCommitDelta == nullptr);
+    cacheUtxoCommitDelta = new CUtxoCommit();
+}
 
 size_t CCoinsViewCache::DynamicMemoryUsage() const {
     return memusage::DynamicUsage(cacheCoins) + cachedCoinsUsage;
@@ -126,6 +159,10 @@ void CCoinsViewCache::AddCoin(const COutPoint &outpoint, Coin coin,
     it->second.flags |=
         CCoinsCacheEntry::DIRTY | (fresh ? CCoinsCacheEntry::FRESH : 0);
     cachedCoinsUsage += it->second.coin.DynamicMemoryUsage();
+
+    if (cacheUtxoCommitDelta != nullptr) {
+        cacheUtxoCommitDelta->Add(outpoint, coin);
+    }
 }
 
 void AddCoins(CCoinsViewCache &cache, const CTransaction &tx, int nHeight,
@@ -147,6 +184,11 @@ bool CCoinsViewCache::SpendCoin(const COutPoint &outpoint, Coin *moveout) {
     if (it == cacheCoins.end()) {
         return false;
     }
+
+    if (cacheUtxoCommitDelta != nullptr) {
+        cacheUtxoCommitDelta->Remove(outpoint, it->second.coin);
+    }
+
     cachedCoinsUsage -= it->second.coin.DynamicMemoryUsage();
     if (moveout) {
         *moveout = std::move(it->second.coin);
@@ -192,7 +234,25 @@ void CCoinsViewCache::SetBestBlock(const uint256 &hashBlockIn) {
 }
 
 bool CCoinsViewCache::BatchWrite(CCoinsMap &mapCoins,
-                                 const uint256 &hashBlockIn) {
+                                 const uint256 &hashBlockIn,
+                                 CUtxoCommit *commitDelta) {
+
+    // Merge commitment
+    if (commitDelta != nullptr) {
+        if (cacheUtxoCommitDelta == nullptr) {
+            // Can't start in the middle of a batch
+            assert(cacheCoins.empty());
+            cacheUtxoCommitDelta = new CUtxoCommit();
+        }
+        cacheUtxoCommitDelta->Add(*commitDelta);
+    } else {
+        // Stop maintaining commitment
+        if (cacheUtxoCommitDelta != nullptr) {
+            delete cacheUtxoCommitDelta;
+            cacheUtxoCommitDelta = nullptr;
+        }
+    }
+
     for (CCoinsMap::iterator it = mapCoins.begin(); it != mapCoins.end();) {
         // Ignore non-dirty entries (optimization).
         if (it->second.flags & CCoinsCacheEntry::DIRTY) {
@@ -255,10 +315,28 @@ bool CCoinsViewCache::BatchWrite(CCoinsMap &mapCoins,
 }
 
 bool CCoinsViewCache::Flush() {
-    bool fOk = base->BatchWrite(cacheCoins, hashBlock);
+    bool fOk = base->BatchWrite(cacheCoins, hashBlock, cacheUtxoCommitDelta);
     cacheCoins.clear();
     cachedCoinsUsage = 0;
     return fOk;
+}
+
+CUtxoCommit *CCoinsViewCache::GetCommitment() const {
+    CUtxoCommit *parent = base->GetCommitment();
+    if (parent == nullptr || cacheUtxoCommitDelta == nullptr) {
+        return nullptr;
+    } else {
+        // merge this commitment delta with parent commitment
+        CUtxoCommit *result = new CUtxoCommit();
+        result->Add(*parent);
+        result->Add(*this->cacheUtxoCommitDelta);
+        return result;
+    }
+}
+
+bool CCoinsViewCache::HasCommitmentDelta() const {
+
+    return cacheUtxoCommitDelta != nullptr;
 }
 
 void CCoinsViewCache::Uncache(const COutPoint &outpoint) {

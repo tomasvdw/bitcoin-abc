@@ -857,6 +857,7 @@ struct CCoinsStats {
     uint64_t nTransactionOutputs;
     uint64_t nBogoSize;
     uint256 hashSerialized;
+    uint256 hashCommitment;
     uint64_t nDiskSize;
     Amount nTotalAmount;
 
@@ -920,6 +921,9 @@ static bool GetUTXOStats(CCoinsView *view, CCoinsStats &stats) {
     }
     stats.hashSerialized = ss.GetHash();
     stats.nDiskSize = view->EstimateSize();
+    CUtxoCommit *commitment = view->GetCommitment();
+    stats.hashCommitment =
+        (commitment == nullptr ? uint256() : commitment->GetHash());
     return true;
 }
 
@@ -1022,6 +1026,7 @@ UniValue gettxoutsetinfo(const Config &config, const JSONRPCRequest &request) {
         ret.push_back(Pair("txouts", int64_t(stats.nTransactionOutputs)));
         ret.push_back(Pair("bogosize", int64_t(stats.nBogoSize)));
         ret.push_back(Pair("hash_serialized", stats.hashSerialized.GetHex()));
+        ret.push_back(Pair("hash_commitment", stats.hashCommitment.GetHex()));
         ret.push_back(Pair("disk_size", stats.nDiskSize));
         ret.push_back(
             Pair("total_amount", ValueFromAmount(stats.nTotalAmount)));
