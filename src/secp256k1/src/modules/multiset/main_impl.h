@@ -39,6 +39,39 @@ static void gej_from_multiset_var(secp256k1_gej *target,  const secp256k1_multis
     target->infinity = secp256k1_fe_is_zero(&target->z) ? 1 : 0;
 }
 
+static void printb(unsigned char * buf, int len) {
+    int n;
+    for(n=0; n < len; n++ ) {
+        printf("%02x", buf[n]);
+    }
+}
+
+static void printfe(secp256k1_fe *fe) {
+    unsigned char buf[32];
+    secp256k1_fe_normalize(fe);
+    secp256k1_fe_get_b32(buf, fe);
+    printb(buf, 32);
+}
+
+
+static void printge(secp256k1_ge *pt) {
+    printf("(");
+    printfe(&pt->x);
+    printf(",");
+    printfe(&pt->y);
+    printf(")");
+}
+
+static void printgej(secp256k1_gej *pt) {
+    secp256k1_ge ptge;
+    secp256k1_ge_set_gej(&ptge, pt);
+    printge(&ptge);
+}
+
+    
+
+
+
 /** Converts a data element to a group element (affine)
  *
  *  We use trial-and-rehash which is fast but non-constant time.
@@ -53,11 +86,17 @@ static void ge_from_data_var(secp256k1_ge *target, const unsigned char *input, s
     unsigned char trial[32];
     uint64_t prefix;
 
+    printf("Input A: ");
+    printb(input, inputLen);
+    printf("\n");
     /* Hash to buffer, leaving space for 8-byte prefix */
     secp256k1_sha256_initialize(&hasher);
     secp256k1_sha256_write(&hasher, input, inputLen);
     secp256k1_sha256_finalize(&hasher, buffer+8);
 
+    printf("SHA(A): ");
+    printb(buffer+8, 32);
+    printf("\n");
     /* Loop through trials, with 50% success per loop
      * We can assume it ends within 2^64. */
     for(prefix=0; 1; prefix++)
@@ -74,22 +113,33 @@ static void ge_from_data_var(secp256k1_ge *target, const unsigned char *input, s
         buffer[6] = (prefix>>48) & 0xFF;
         buffer[7] = (prefix>>56) & 0xFF;
 
+
         /* Hash to trial  */
         secp256k1_sha256_initialize(&hasher);
         secp256k1_sha256_write(&hasher, buffer, sizeof(buffer));
         secp256k1_sha256_finalize(&hasher, trial);
 
+        printf("x = SHA256(prefix,SHA(A)): ");
+        printb(trial, 32);
+        printf("\n");
+
         if (!secp256k1_fe_set_b32(&x, trial)) {
+            printf("Out-of-range\n");
             continue;
         }
 
         /* We let y is even be the element and odd be its inverse */
         if (!secp256k1_ge_set_xo_var(target, &x, inverse)) {
+            printf("No Quadratic Residue\n");
             continue;
         }
 
         VERIFY_CHECK(secp256k1_ge_is_valid_var(target));
         VERIFY_CHECK(!secp256k1_ge_is_infinity(target));
+
+        printf("Point:"); 
+        printge(target);
+        printf("\n");
         break;
     }
 }
@@ -112,6 +162,10 @@ static int multiset_add_remove(const secp256k1_context* ctx, secp256k1_multiset 
     secp256k1_fe_normalize(&target.y);
     secp256k1_fe_normalize(&target.z);
     multiset_from_gej_var(multiset, &target);
+
+    printf("Add_remove result:");
+    printgej(&target);
+    printf("\n");
 
     return 1;
 }
@@ -144,6 +198,9 @@ int secp256k1_multiset_combine(const secp256k1_context* ctx, secp256k1_multiset 
     secp256k1_fe_normalize(&gej_result.z);
     multiset_from_gej_var(multiset, &gej_result);
 
+    printf("Add_remove result:");
+    printgej(&gej_result);
+    printf("\n");
     return 1;
 }
 
@@ -176,6 +233,10 @@ int secp256k1_multiset_finalize(const secp256k1_context* ctx, unsigned char *res
     secp256k1_sha256_initialize(&hasher);
     secp256k1_sha256_write(&hasher, buffer, sizeof(buffer));
     secp256k1_sha256_finalize(&hasher, resultHash);
+
+    printf("Finalize result:");
+    printb(resultHash, 32);
+    printf("\n");
 
     return 1;
 }
